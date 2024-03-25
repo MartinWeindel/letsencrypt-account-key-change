@@ -13,7 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"math/big"
 	"net/http"
@@ -23,34 +23,34 @@ import (
 	"golang.org/x/net/context/ctxhttp"
 )
 
-const baseAcctURL = "https://acme-v01.api.letsencrypt.org/acme/reg/"
-const keyChangeURL = "https://acme-v01.api.letsencrypt.org/acme/key-change"
+const keyChangeURL = "https://acme-v02.api.letsencrypt.org/acme/key-change"
+const nonceURL = "https://acme-v02.api.letsencrypt.org/acme/new-nonce"
+const acctURL = "https://acme-v02.api.letsencrypt.org/acme/acct/"
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] == "" {
 		log.Fatal("You must specify an account number as the first argument.")
 	}
-	acctURL := baseAcctURL + os.Args[1]
+	kid := acctURL + os.Args[1]
 	oldKey := getKeyFromFile("old.key")
 	newKey := getKeyFromFile("new.key")
-	jwkNew, err := jwkEncode(newKey.Public())
+	jwkOld, err := jwkEncode(oldKey.Public())
 	if err != nil {
 		log.Fatal(err)
 	}
 	innerPayload := map[string]interface{}{
-		"account": acctURL,
-		"newKey":  json.RawMessage(jwkNew),
+		"account": kid,
+		"oldKey":  json.RawMessage(jwkOld),
 	}
-	innerJWS, err := jwsEncodeJSON(innerPayload, newKey, "")
+	innerJWS, err := jwsEncodeJSON(innerPayload, newKey, "", "", keyChangeURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	nonce, err := fetchNonce(context.Background(), http.DefaultClient, acctURL)
+	nonce, err := fetchNonce(context.Background(), http.DefaultClient, nonceURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	innerJWS = []byte(string(innerJWS[:len(innerJWS)-1]) + `, "resource":"key-change"}`)
-	outerJWS, err := jwsEncodeJSON(json.RawMessage(innerJWS), oldKey, nonce)
+	outerJWS, err := jwsEncodeJSON(json.RawMessage(innerJWS), oldKey, kid, nonce, keyChangeURL)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -58,6 +58,7 @@ func main() {
 	JWKThumb, _ := acme.JWKThumbprint(newKey.Public())
 	log.Println("Your new key's thumbprint for accepting ACME challenges is:", JWKThumb)
 	log.Println("Please inspect the output below to see if LE accepted your new key.")
+	//println(string(outerJWS))
 	resp, err := ctxhttp.Post(context.Background(), http.DefaultClient, keyChangeURL, "application/jose+json", bytes.NewReader(outerJWS))
 	if err != nil {
 		log.Println("HTTP Error:", err.Error())
@@ -65,7 +66,7 @@ func main() {
 	}
 	defer resp.Body.Close()
 	log.Println("Status Code:", resp.StatusCode)
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Println("ReadBody Error:", err.Error())
 		return
@@ -86,7 +87,7 @@ func fetchNonce(ctx context.Context, client *http.Client, url string) (string, e
 	return enc, nil
 }
 
-func jwsEncodeJSON(claimset interface{}, key crypto.Signer, nonce string) ([]byte, error) {
+func jwsEncodeJSON(claimset interface{}, key crypto.Signer, kid, nonce, url string) ([]byte, error) {
 	jwk, err := jwkEncode(key.Public())
 	if err != nil {
 		return nil, err
@@ -95,9 +96,9 @@ func jwsEncodeJSON(claimset interface{}, key crypto.Signer, nonce string) ([]byt
 	if alg == "" || !sha.Available() {
 		return nil, errors.New("error")
 	}
-	phead := fmt.Sprintf(`{"alg":%q,"jwk":%s,"nonce":%q}`, alg, jwk, nonce)
+	phead := fmt.Sprintf(`{"alg":%q,"kid":"%s","nonce":%q,"url":"%s"}`, alg, kid, nonce, url)
 	if nonce == "" {
-		phead = fmt.Sprintf(`{"alg":%q,"jwk":%s}`, alg, jwk)
+		phead = fmt.Sprintf(`{"alg":%q,"jwk":%s,"url":"%s"}`, alg, jwk, url)
 	}
 	phead = base64.RawURLEncoding.EncodeToString([]byte(phead))
 	cs, err := json.Marshal(claimset)
@@ -202,12 +203,12 @@ func jwsHasher(key crypto.Signer) (string, crypto.Hash) {
 }
 
 func getKeyFromFile(filename string) crypto.Signer {
-	keyPEMBlock, err := ioutil.ReadFile(filename)
+	keyPEMBlock, err := os.ReadFile(filename)
 	if err != nil {
 		log.Fatal(err)
 	}
 	keyDERBlock, _ := pem.Decode(keyPEMBlock)
-	key, err := x509.ParsePKCS1PrivateKey(keyDERBlock.Bytes)
+	key, err := x509.ParseECPrivateKey(keyDERBlock.Bytes)
 	if err != nil {
 		log.Fatal(err)
 	}
