@@ -1,3 +1,36 @@
+# There are better alternatives available to update the key for an ACME account
+
+For example using the package "golang.org/x/crypto/acme" from https://github.com/golang/crypto
+
+```go
+import (
+	"net/http"
+
+	"golang.org/x/crypto/acme"
+)
+
+func changeKey(ctx context.Context, directoryURL string, oldKeyPEM []byte, newKeyPEM []byte) error {
+	oldKey, err := decodeAndParseKey(oldKeyPEM)
+	if err != nil {
+		return fmt.Errorf("decoding/parsing old key failed: %s", err)
+	}
+	newKey, err := decodeAndParseKey(newKeyPEM)
+	if err != nil {
+		return fmt.Errorf("decoding/parsing new key failed: %s", err)
+	}
+
+	client := acme.Client{
+		Key:          oldKey,
+		HTTPClient:   http.DefaultClient,
+		DirectoryURL: directoryURL,
+		RetryBackoff: nil,
+		UserAgent:    "...",
+	}
+
+	return client.AccountKeyRollover(ctx, newKey)
+}
+```
+
 # DISCLAIMER:  This isn't a great peice of software.  Inspect the code and use at your own risk.
 
 So you want to change your Let's Encrypt account's key?  Here's a quick-start guide:
